@@ -224,3 +224,76 @@ Run without snapshot persistence:
 ```cmd
 docker run --rm -p 8080:8080 -e KVS_SNAPSHOT_ENABLED=false simplekvs
 ```
+
+## Raft Leader Election
+
+Implements the Raft consensus algorithm's leader election phase for a single
+shard group of 3-4 nodes. One leader is elected per term, heartbeats keep
+followers stable, and re-election happens automatically when a leader crashes.
+
+### What is implemented
+
+- Follower / Candidate / Leader state machine
+- Randomised election timeout (300–600ms) to prevent split votes
+- Parallel RequestVote RPCs with majority vote counting
+- Leader heartbeats every 100ms via AppendEntries
+- Automatic re-election on leader crash
+- Term monotonicity across elections
+- Node metrics exposed via `/metrics` endpoint
+- Gin HTTP server for node-to-node RPC
+- Docker-based EC2 deployment via Terraform
+
+### Important files
+
+| File | What it does |
+|---|---|
+| `raft/state.go` | NodeState enum with atomic transitions |
+| `raft/log.go` | LogEntry struct and lastIndexAndTerm |
+| `raft/transport.go` | RequestVote + AppendEntries message types |
+| `raft/raft.go` | Node struct, metrics, Start/Stop |
+| `raft/election.go` | Full state machine and RPC handlers |
+| `raft/cluster.go` | In-process transport for tests |
+| `raft/election_test.go` | 5 unit tests |
+| `rpc/server.go` | Gin HTTP server |
+| `rpc/client.go` | HTTP transport for EC2 nodes |
+| `cmd/node/main.go` | Binary entry point |
+
+### Run tests locally
+```bash
+go test ./raft/... -v -timeout 60s
+```
+
+### Run a 3-node cluster locally
+```bash
+# Terminal 1
+RAFT_NODE_ID=nodeA \
+RAFT_PEERS="nodeB@localhost:7001,nodeC@localhost:7002" \
+RAFT_ADDR=:7000 \
+go run ./cmd/node
+
+# Terminal 2
+RAFT_NODE_ID=nodeB \
+RAFT_PEERS="nodeA@localhost:7000,nodeC@localhost:7002" \
+RAFT_ADDR=:7001 \
+go run ./cmd/node
+
+# Terminal 3
+RAFT_NODE_ID=nodeC \
+RAFT_PEERS="nodeA@localhost:7000,nodeB@localhost:7001" \
+RAFT_ADDR=:7002 \
+go run ./cmd/node
+```
+
+Check status:
+```bash
+curl http://localhost:7000/status
+curl http://localhost:7001/status
+curl http://localhost:7002/status
+```
+
+### Deploy to EC2
+```bash
+cd infrastructure/raft_leader_election_infra/terraform
+terraform init
+terraform apply -var="key_name=your-key-name"
+```
