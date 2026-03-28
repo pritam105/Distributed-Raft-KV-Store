@@ -340,3 +340,26 @@ python3 infrastructure/raft_leader_election_infra/experiment.py \
   --key ~/.ssh/your-key.pem \
   --rounds 5
 ```
+### What the tests cover
+
+| Test | What it proves |
+|---|---|
+| `TestElection_3Nodes` | 3 nodes elect exactly one leader |
+| `TestElection_4Nodes` | 4 nodes elect exactly one leader |
+| `TestElection_LeaderCrash` | Leader dies → new leader elected at higher term |
+| `TestElection_FollowerCrash` | Follower dies → leader stays stable |
+| `TestElection_TermIncreases` | Term always increases across re-elections |
+
+### EC2 experiment results (us-west-2, 3x t3.micro)
+
+5 rounds of leader crash + re-election:
+
+| Round | Crashed | New Leader | Time |
+|---|---|---|---|
+| 1 | nodeA | nodeB | 190ms |
+| 2 | nodeB | nodeA | 190ms |
+| 3 | nodeA | nodeC | 381ms |
+| 4 | nodeC | nodeB | 368ms |
+| 5 | nodeB | nodeC | 368ms |
+
+Average re-election time: **299ms**
