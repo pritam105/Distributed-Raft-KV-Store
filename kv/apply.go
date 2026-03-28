@@ -1,9 +1,18 @@
-// Bridges Raft and the KV store.
-//
-// Listens on the channel that raft/state.go writes committed entries into.
-// For each committed LogEntry it receives, it calls the appropriate
-// store.Put / store.Delete operation.
-//
-// This is what makes the replication "real": the log entry has been agreed
-// upon by the cluster, so now it is safe to mutate the actual data.
 package kv
+
+import "distributed-raft-kv-store/storage"
+
+func (s *Store) Apply(entry storage.Entry) error {
+	if entry.Key == "" {
+		return ErrEmptyKey
+	}
+
+	switch entry.Op {
+	case storage.OpDelete:
+		return s.Delete(entry.Key)
+	case storage.OpUpsert:
+		return s.Upsert(entry.Key, entry.Value)
+	default:
+		return storage.ErrUnknownOperation
+	}
+}

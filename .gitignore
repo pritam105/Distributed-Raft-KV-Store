@@ -1,0 +1,37 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+
+# Go workspace files
+.coverprofile
+coverage.out
+
+# Local runtime data
+/data/
+tmp/
+*.log
+*.wal
+/data;C
+
+# Environment overrides
+.env
+.env.*
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Personal files
+/scripts
