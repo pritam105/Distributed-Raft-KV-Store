@@ -12,6 +12,9 @@ dnf install -y golang git
 cd /home/ec2-user
 git clone https://github.com/pritam105/Distributed-Raft-KV-Store.git repo
 cd repo
+export HOME=/root
+export GOPATH=/root/go
+export GOMODCACHE=/root/go/pkg/mod
 go build -o /usr/local/bin/raft-node ./cmd/node
 
 # Create systemd service
