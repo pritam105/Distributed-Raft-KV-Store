@@ -1,9 +1,38 @@
-// Network transport: how this Raft node calls RPCs on other nodes.
-//
-// Wraps Go's net/rpc so the rest of the Raft code can call
-// peer.RequestVote(...) or peer.AppendEntries(...) without caring about
-// connection management, retries, or timeouts.
-//
-// Keeping transport here means the core Raft logic (election.go, replication.go)
-// stays testable — you can swap in a fake transport for unit tests.
 package raft
+
+import "fmt"
+
+type RequestVoteArgs struct {
+	Term         uint64
+	CandidateID  string
+	LastLogIndex uint64
+	LastLogTerm  uint64
+}
+
+type RequestVoteReply struct {
+	Term        uint64
+	VoteGranted bool
+}
+
+type AppendEntriesArgs struct {
+	Term     uint64
+	LeaderID string
+}
+
+type AppendEntriesReply struct {
+	Term    uint64
+	Success bool
+}
+
+type Transport interface {
+	SendRequestVote(peerID string, args RequestVoteArgs) (RequestVoteReply, error)
+	SendAppendEntries(peerID string, args AppendEntriesArgs) (AppendEntriesReply, error)
+}
+
+type ErrNotReachable struct {
+	PeerID string
+}
+
+func (e ErrNotReachable) Error() string {
+	return fmt.Sprintf("peer %s is not reachable", e.PeerID)
+}

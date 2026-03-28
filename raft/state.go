@@ -1,11 +1,43 @@
-// State transitions: Follower → Candidate → Leader (and back).
-//
-// Centralizes the rules for moving between roles so the transitions are
-// never scattered across files. For example:
-//   - becomeFollower: reset votedFor, stop heartbeat loop
-//   - becomeLeader:   initialize nextIndex/matchIndex, start heartbeat loop
-//
-// Also contains the "apply loop" — a background goroutine that watches
-// commitIndex and, whenever it advances, sends newly committed log entries
-// to the KV state machine via a channel.
 package raft
+
+import (
+	"fmt"
+	"sync/atomic"
+)
+
+type NodeState int32
+
+const (
+	Follower NodeState = iota
+	Candidate
+	Leader
+)
+
+func (s NodeState) String() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return fmt.Sprintf("Unknown(%d)", int(s))
+	}
+}
+
+type atomicState struct {
+	v int32
+}
+
+func (a *atomicState) load() NodeState {
+	return NodeState(atomic.LoadInt32(&a.v))
+}
+
+func (a *atomicState) store(s NodeState) {
+	atomic.StoreInt32(&a.v, int32(s))
+}
+
+func (a *atomicState) cas(old, new NodeState) bool {
+	return atomic.CompareAndSwapInt32(&a.v, int32(old), int32(new))
+}
