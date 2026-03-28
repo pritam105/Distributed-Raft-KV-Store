@@ -297,3 +297,46 @@ cd infrastructure/raft_leader_election_infra/terraform
 terraform init
 terraform apply -var="key_name=your-key-name"
 ```
+### Check election status on EC2
+
+Once deployed, check which node is leader:
+```bash
+curl http://<nodeA_ip>:7000/status
+curl http://<nodeB_ip>:7000/status
+curl http://<nodeC_ip>:7000/status
+```
+
+Check metrics:
+```bash
+curl http://<nodeA_ip>:7000/metrics
+curl http://<nodeB_ip>:7000/metrics
+curl http://<nodeC_ip>:7000/metrics
+```
+
+Simulate a leader crash:
+```bash
+ssh -i your-key.pem ec2-user@<leader_ip> "sudo systemctl stop raft-node"
+```
+
+Watch re-election happen on the remaining nodes:
+```bash
+curl http://<nodeB_ip>:7000/status
+# will show new leader within ~300-600ms
+```
+
+Restart the crashed node and watch it rejoin as Follower:
+```bash
+ssh -i your-key.pem ec2-user@<leader_ip> "sudo systemctl start raft-node"
+curl http://<leader_ip>:7000/status
+# will show Follower with new higher term
+```
+
+Run the full timing experiment:
+```bash
+python3 infrastructure/raft_leader_election_infra/experiment.py \
+  --node-a <nodeA_ip> \
+  --node-b <nodeB_ip> \
+  --node-c <nodeC_ip> \
+  --key ~/.ssh/your-key.pem \
+  --rounds 5
+```
