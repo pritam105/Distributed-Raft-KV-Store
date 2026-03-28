@@ -11,7 +11,7 @@ import (
 )
 
 func TestServerKeyLifecycle(t *testing.T) {
-	server := NewServer(kv.NewStore(storage.NewNoopWAL()))
+	server := NewServer(kv.NewStore(storage.NewNoopWAL(), storage.NewNoopSnapshot()))
 
 	putReq := httptest.NewRequest(http.MethodPut, "/v1/keys/user1", bytes.NewBufferString(`{"value":"alice"}`))
 	putRes := httptest.NewRecorder()
@@ -43,7 +43,7 @@ func TestServerKeyLifecycle(t *testing.T) {
 }
 
 func TestServerRejectsNestedKeyPath(t *testing.T) {
-	server := NewServer(kv.NewStore(storage.NewNoopWAL()))
+	server := NewServer(kv.NewStore(storage.NewNoopWAL(), storage.NewNoopSnapshot()))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/keys/a/b", nil)
 	res := httptest.NewRecorder()

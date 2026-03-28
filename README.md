@@ -10,8 +10,9 @@ It supports:
 - read a key
 - delete a key
 - optional WAL (write-ahead log)
-- recovery from WAL on restart
-- a small HTTP service for testing
+- optional snapshot persistence
+- recovery from persisted snapshot data and WAL replay
+- a small HTTP service for local testing
 
 This is the local building block we can later place behind Raft replication and sharding.
 
@@ -21,21 +22,22 @@ The current flow is:
 
 1. A client sends an HTTP request.
 2. The HTTP server reads the request and calls the KV store.
-3. The KV store updates in-memory state.
-4. If WAL is enabled, the operation is first appended to the WAL file.
-5. On restart, the store replays the WAL and rebuilds the latest state.
+3. The KV store appends the write to the WAL if WAL is enabled.
+4. The KV store updates the in-memory map.
+5. The KV store saves the full map as a snapshot if snapshots are enabled.
+6. On restart, the service loads the snapshot first and then replays the WAL.
 
 ## Important files
 
 ### Core KV store
 
 - `kv/store.go`
-  This is the in-memory key-value store. It supports `Upsert`, `Get`, `Delete`, and replay-based startup.
+  This is the in-memory key-value store. It supports `Upsert`, `Get`, `Delete`, and startup recovery from snapshot + WAL.
 
 - `kv/apply.go`
-  Small helper that applies a storage entry to the store. This is useful because later Raft can hand committed entries to the store in a consistent format.
+  Small helper that applies a storage entry to the store. This is useful later when Raft hands committed entries to the store.
 
-### WAL and persistence
+### Persistence
 
 - `storage/logstore.go`
   Contains the WAL implementation.
@@ -45,8 +47,15 @@ The current flow is:
   - `FileWAL`: real WAL on disk
   - `NoopWAL`: disabled WAL mode
 
+- `storage/snapshot.go`
+  Contains snapshot persistence.
+  It defines:
+  - `SnapshotStore`: interface for save/load
+  - `FileSnapshot`: stores the full KV map as JSON on disk
+  - `NoopSnapshot`: disabled snapshot mode
+
 - `storage/persistence.go`
-  Small configuration wrapper used to open either a real WAL or a no-op WAL.
+  Small configuration wrapper used to open WAL and snapshot persistence.
 
 ### HTTP service
 
@@ -55,23 +64,30 @@ The current flow is:
 
 - `cmd/simplekvs/main.go`
   Entry point for running the single-node key-value store as a service.
-  It reads environment variables, opens the WAL, restores data, and starts the HTTP server.
+  It reads environment variables, opens the WAL and snapshot store, restores data, and starts the HTTP server.
 
 ### Container setup
 
 - `api/Dockerfile`
   Dockerfile for building and running the simple HTTP key-value store in a container.
 
-### Tests
+## How persistence works
 
-- `kv/store_test.go`
-  Unit tests for basic KV behavior and replay from WAL.
+There are two persistence layers right now:
 
-- `storage/logstore_test.go`
-  Unit tests for WAL behavior.
+- WAL
+  Every write operation is recorded as an append-only log entry.
 
-- `api/http_test.go`
-  Unit tests for the HTTP API.
+- Snapshot
+  After a successful write, the current full KV map is saved to disk as JSON.
+
+On startup:
+
+1. the latest snapshot is loaded
+2. the WAL is replayed
+3. the in-memory map is rebuilt to the latest state
+
+This gives us a simple version of true persistence while still keeping WAL-based recovery.
 
 ## How to run the KV store locally
 
@@ -81,11 +97,13 @@ Run this from the repo root:
 go run ./cmd/simplekvs
 ```
 
-By default it starts:
+By default it starts with:
 
 - HTTP address: `:8080`
 - WAL enabled: `true`
 - WAL path: `data/wal.log`
+- snapshot enabled: `true`
+- snapshot path: `data/snapshot.json`
 
 ### Environment variables
 
@@ -99,12 +117,20 @@ By default it starts:
 - `KVS_WAL_PATH`
   Path to WAL file
 
+- `KVS_SNAPSHOT_ENABLED`
+  Set to `false` to disable snapshot persistence
+
+- `KVS_SNAPSHOT_PATH`
+  Path to snapshot file
+
 Example:
 
 ```cmd
 set KVS_ADDR=:8080
 set KVS_WAL_ENABLED=true
 set KVS_WAL_PATH=data/wal.log
+set KVS_SNAPSHOT_ENABLED=true
+set KVS_SNAPSHOT_PATH=data/snapshot.json
 go run ./cmd/simplekvs
 ```
 
@@ -112,6 +138,13 @@ Example without WAL:
 
 ```cmd
 set KVS_WAL_ENABLED=false
+go run ./cmd/simplekvs
+```
+
+Example without snapshot persistence:
+
+```cmd
+set KVS_SNAPSHOT_ENABLED=false
 go run ./cmd/simplekvs
 ```
 
@@ -178,6 +211,7 @@ What this does:
 - maps your machine's port `8080` to the container's port `8080`
 - mounts a local `data` folder into `/data` inside the container
 - stores the WAL file at `/data/wal.log`
+- stores the snapshot file at `/data/snapshot.json`
 
 Run without WAL:
 
@@ -185,16 +219,8 @@ Run without WAL:
 docker run --rm -p 8080:8080 -e KVS_WAL_ENABLED=false simplekvs
 ```
 
-## What this is not yet
+Run without snapshot persistence:
 
-This is not yet the full distributed system from the proposal.
-
-It does not yet include:
-
-- Raft replication
-- leader election
-- shard routing
-- multi-node deployment
-- distributed failure handling
-
-Right now it is the simplest working storage layer and HTTP interface we can use as a foundation for the distributed version later.
+```cmd
+docker run --rm -p 8080:8080 -e KVS_SNAPSHOT_ENABLED=false simplekvs
+```

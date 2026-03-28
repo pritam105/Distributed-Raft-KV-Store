@@ -8,7 +8,7 @@ import (
 )
 
 func TestStoreUpsertReadDelete(t *testing.T) {
-	store := NewStore(storage.NewNoopWAL())
+	store := NewStore(storage.NewNoopWAL(), storage.NewNoopSnapshot())
 
 	if err := store.Upsert("user:1", "alice"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
@@ -50,15 +50,21 @@ func TestStoreUpsertReadDelete(t *testing.T) {
 	}
 }
 
-func TestStoreRestoresFromWAL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wal.log")
+func TestStoreRestoresFromDisk(t *testing.T) {
+	root := t.TempDir()
+	walPath := filepath.Join(root, "wal.log")
+	snapshotPath := filepath.Join(root, "snapshot.json")
 
-	wal, err := storage.NewFileWAL(path)
+	wal, err := storage.NewFileWAL(walPath)
 	if err != nil {
 		t.Fatalf("create wal failed: %v", err)
 	}
+	snapshot, err := storage.NewFileSnapshot(snapshotPath)
+	if err != nil {
+		t.Fatalf("create snapshot failed: %v", err)
+	}
 
-	store := NewStore(wal)
+	store := NewStore(wal, snapshot)
 	if err := store.Upsert("project", "raft"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
@@ -75,13 +81,17 @@ func TestStoreRestoresFromWAL(t *testing.T) {
 		t.Fatalf("close wal failed: %v", err)
 	}
 
-	reopened, err := storage.NewFileWAL(path)
+	reopened, err := storage.NewFileWAL(walPath)
 	if err != nil {
 		t.Fatalf("reopen wal failed: %v", err)
 	}
 	defer reopened.Close()
+	reopenedSnapshot, err := storage.NewFileSnapshot(snapshotPath)
+	if err != nil {
+		t.Fatalf("reopen snapshot failed: %v", err)
+	}
 
-	restored, err := NewStoreFromWAL(reopened)
+	restored, err := NewStoreFromDisk(reopened, reopenedSnapshot)
 	if err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}

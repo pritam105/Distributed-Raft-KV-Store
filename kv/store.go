@@ -10,31 +10,40 @@ import (
 var ErrEmptyKey = errors.New("key cannot be empty")
 
 type Store struct {
-	mu   sync.RWMutex
-	data map[string]string
-	wal  storage.WAL
+	mu       sync.RWMutex
+	data     map[string]string
+	wal      storage.WAL
+	snapshot storage.SnapshotStore
 }
 
-func NewStore(wal storage.WAL) *Store {
+func NewStore(wal storage.WAL, snapshot storage.SnapshotStore) *Store {
 	return &Store{
-		data: make(map[string]string),
-		wal:  wal,
+		data:     make(map[string]string),
+		wal:      wal,
+		snapshot: snapshot,
 	}
 }
 
-func NewStoreFromWAL(wal storage.WAL) (*Store, error) {
-	store := NewStore(wal)
-	if wal == nil {
-		return store, nil
+func NewStoreFromDisk(wal storage.WAL, snapshot storage.SnapshotStore) (*Store, error) {
+	store := NewStore(wal, snapshot)
+
+	if snapshot != nil {
+		state, err := snapshot.Load()
+		if err != nil {
+			return nil, err
+		}
+		store.data = state
 	}
 
-	entries, err := wal.Load()
-	if err != nil {
-		return nil, err
-	}
+	if wal != nil {
+		entries, err := wal.Load()
+		if err != nil {
+			return nil, err
+		}
 
-	for _, entry := range entries {
-		store.apply(entry)
+		for _, entry := range entries {
+			store.apply(entry)
+		}
 	}
 
 	return store, nil
@@ -51,14 +60,9 @@ func (s *Store) Upsert(key, value string) error {
 		Value: value,
 	}
 
-	if err := s.append(entry); err != nil {
-		return err
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.applyLocked(entry)
-	return nil
+	return s.persistAndApplyLocked(entry)
 }
 
 func (s *Store) Delete(key string) error {
@@ -71,14 +75,9 @@ func (s *Store) Delete(key string) error {
 		Key: key,
 	}
 
-	if err := s.append(entry); err != nil {
-		return err
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.applyLocked(entry)
-	return nil
+	return s.persistAndApplyLocked(entry)
 }
 
 func (s *Store) Get(key string) (string, bool, error) {
@@ -126,4 +125,23 @@ func (s *Store) applyLocked(entry storage.Entry) {
 	default:
 		s.data[entry.Key] = entry.Value
 	}
+}
+
+func (s *Store) persistAndApplyLocked(entry storage.Entry) error {
+	if err := s.append(entry); err != nil {
+		return err
+	}
+
+	s.applyLocked(entry)
+
+	if s.snapshot == nil {
+		return nil
+	}
+
+	state := make(map[string]string, len(s.data))
+	for key, value := range s.data {
+		state[key] = value
+	}
+
+	return s.snapshot.Save(state)
 }

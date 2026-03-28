@@ -21,6 +21,8 @@ RUN mkdir -p /data
 ENV KVS_ADDR=:8080
 ENV KVS_WAL_ENABLED=true
 ENV KVS_WAL_PATH=/data/wal.log
+ENV KVS_SNAPSHOT_ENABLED=true
+ENV KVS_SNAPSHOT_PATH=/data/snapshot.json
 
 EXPOSE 8080
 

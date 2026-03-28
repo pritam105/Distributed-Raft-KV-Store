@@ -12,3 +12,11 @@ func OpenWAL(cfg Config) (WAL, error) {
 
 	return NewFileWAL(cfg.Path)
 }
+
+func OpenSnapshot(cfg Config) (SnapshotStore, error) {
+	if !cfg.Enabled {
+		return NewNoopSnapshot(), nil
+	}
+
+	return NewFileSnapshot(cfg.Path)
+}
