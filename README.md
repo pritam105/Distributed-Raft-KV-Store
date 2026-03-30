@@ -363,3 +363,88 @@ python3 infrastructure/raft_leader_election_infra/experiment.py \
 | 5 | nodeB | nodeC | 368ms |
 
 Average re-election time: **299ms**
+
+---
+
+## Consistent Hashing and Shard Routing
+
+Distributes keys across independent KV nodes using consistent hashing. A stateless router sits in front of the KV nodes, hashes each key to a shard, and forwards the request to the correct node.
+
+### What is implemented
+
+- FNV-1a consistent hashing — every client and node uses the same deterministic function, no central directory needed
+- Stateless shard router — hashes the key, selects the target shard, forwards `GET`/`PUT`/`DELETE` to the node's existing `/v1/keys/{key}` API
+- Multi-address fallback per shard — router tries each address in order, forward-compatible with Raft leaders
+- Cluster config loaded from environment variables at startup
+- CLI client (`cmd/client`) with `get`, `put`, `del` commands — prints the resolved shard ID alongside each result
+
+### Important files
+
+| File | What it does |
+|---|---|
+| `shard/hashing.go` | `KeyToShard(key, total)` — FNV-1a hash mod total shards |
+| `shard/shard_group.go` | `Shard` struct — ID + list of node addresses |
+| `shard/router.go` | `Router` — routes and forwards Get/Put/Delete |
+| `config/config.go` | `LoadFromEnv()` — builds cluster topology from env vars |
+| `cmd/client/main.go` | CLI entry point |
+| `functional/sharding_test.go` | Functional tests for hashing, routing, and config |
+
+### Run a 2-shard setup locally
+
+```bash
+# Terminal 1 — shard 0
+go run ./cmd/simplekvs
+
+# Terminal 2 — shard 1
+KVS_ADDR=:8081 KVS_WAL_PATH=data/wal1.log KVS_SNAPSHOT_PATH=data/snap1.json \
+go run ./cmd/simplekvs
+
+# Terminal 3 — use the CLI client
+export CLIENT_SHARDS_TOTAL=2
+export CLIENT_SHARD_0_ADDRS=http://localhost:8080
+export CLIENT_SHARD_1_ADDRS=http://localhost:8081
+
+go run ./cmd/client put name alice
+go run ./cmd/client put city london
+go run ./cmd/client get name
+go run ./cmd/client get city
+go run ./cmd/client del name
+```
+
+Each response prints which shard the key landed on:
+
+```
+ok  (shard 1)
+ok  (shard 0)
+name = alice  (shard 1)
+city = london  (shard 0)
+deleted  (shard 1)
+```
+
+### Environment variables
+
+| Variable | Description | Example |
+|---|---|---|
+| `CLIENT_SHARDS_TOTAL` | Total number of shards | `2` |
+| `CLIENT_SHARD_0_ADDRS` | Comma-separated addresses for shard 0 | `http://localhost:8080,http://localhost:8081` |
+| `CLIENT_SHARD_N_ADDRS` | Addresses for shard N | `http://localhost:8090` |
+
+### Run the sharding tests
+
+```bash
+go test ./functional/... -v -run "TestHashing|TestRouter|TestConfig" -timeout 30s
+```
+
+### What the tests cover
+
+| Test | What it proves |
+|---|---|
+| `TestHashingIsDeterministic` | Same key always maps to the same shard |
+| `TestHashingResultIsInRange` | Hash output is always within `[0, totalShards)` |
+| `TestHashingDistributesAcrossTwoShards` | Keys spread across both shards |
+| `TestRouterPutAndGet` | Basic write + read through the router |
+| `TestRouterDelete` | Key is absent after delete |
+| `TestRouterTwoShardsIsolation` | Data on shard 0 is invisible on shard 1 |
+| `TestRouterFallbackToNextAddress` | Router skips a dead node and uses the next |
+| `TestConfigLoadFromEnv` | Env vars parse into the correct shard topology |
+| `TestConfigLoadFromEnvMissingAddr` / `InvalidTotal` | Bad config is rejected |
