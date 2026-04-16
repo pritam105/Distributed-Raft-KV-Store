@@ -128,6 +128,12 @@ func (n *Node) becomeLeader(term uint64) {
 		return
 	}
 
+	lastIdx, _ := n.log.lastIndexAndTerm()
+	for _, peer := range n.peers {
+		n.nextIndex[peer] = lastIdx + 1
+		n.matchIndex[peer] = 0
+	}
+
 	log.Printf("[%s] *** LEADER term=%d ***", n.id, term)
 
 	n.Metrics.mu.Lock()
@@ -164,31 +170,12 @@ func (n *Node) loopLeader() {
 }
 
 func (n *Node) sendHeartbeats() {
-	n.mu.Lock()
-	term := n.currentTerm
-	leaderID := n.id
-	n.mu.Unlock()
-
 	var wg sync.WaitGroup
 	for _, peer := range n.peers {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
-			args := AppendEntriesArgs{
-				Term:     term,
-				LeaderID: leaderID,
-			}
-			reply, err := n.transport.SendAppendEntries(p, args)
-			if err != nil {
-				return
-			}
-			n.Metrics.mu.Lock()
-			n.Metrics.HeartbeatsSent++
-			n.Metrics.mu.Unlock()
-
-			if reply.Term > term {
-				n.signalStepDown(reply.Term)
-			}
+			n.sendHeartbeatToPeer(p)
 		}(peer)
 	}
 	wg.Wait()
@@ -260,6 +247,34 @@ func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	n.Metrics.HeartbeatsRecvd++
 	n.Metrics.CurrentLeaderID = args.LeaderID
 	n.Metrics.mu.Unlock()
+
+	// Log consistency check: reject if our log doesn't have PrevLogIndex/Term
+	if args.PrevLogIndex > 0 {
+		prev, ok := n.log.entryAt(args.PrevLogIndex)
+		if !ok || prev.Term != args.PrevLogTerm {
+			return reply // reject: log inconsistency
+		}
+	}
+
+	// Append new entries, handling conflicts
+	for _, entry := range args.Entries {
+		if existing, ok := n.log.entryAt(entry.Index); ok {
+			if existing.Term != entry.Term {
+				// conflicting entry — truncate and rewrite
+				n.log.truncateAfter(entry.Index - 1)
+				n.log.appendEntry(entry)
+			}
+			// same term = already have it, skip
+		} else {
+			n.log.appendEntry(entry)
+		}
+	}
+
+	// Advance commit index to match leader
+	if args.LeaderCommit > n.commitIndex {
+		n.commitIndex = min(args.LeaderCommit, n.log.lastIndex())
+		go n.applyCommitted()
+	}
 
 	reply.Success = true
 	return reply

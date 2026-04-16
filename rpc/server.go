@@ -1,15 +1,19 @@
 package rpc
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
+	"distributed-raft-kv-store/kv"
 	"distributed-raft-kv-store/raft"
+	"distributed-raft-kv-store/storage"
 )
 
 type Server struct {
 	node   *raft.Node
+	store  *kv.Store
 	engine *gin.Engine
 }
 
@@ -25,6 +29,14 @@ func NewServer(node *raft.Node) *Server {
 
 func (s *Server) Handler() http.Handler {
 	return s.engine
+}
+
+// RegisterKVRoutes adds GET/PUT/DELETE /v1/keys/:key with leader check.
+func (s *Server) RegisterKVRoutes(store *kv.Store) {
+	s.store = store
+	s.engine.GET("/v1/keys/:key", s.handleGet)
+	s.engine.PUT("/v1/keys/:key", s.handlePut)
+	s.engine.DELETE("/v1/keys/:key", s.handleDelete)
 }
 
 func (s *Server) routes() {
@@ -81,4 +93,78 @@ func (s *Server) handleMetrics(c *gin.Context) {
 		"heartbeatsRecvd":  m.HeartbeatsRecvd,
 		"currentLeaderID":  m.CurrentLeaderID,
 	})
+}
+
+// --- KV handlers ---
+
+func (s *Server) handleGet(c *gin.Context) {
+	key := c.Param("key")
+	value, found, err := s.store.Get(key)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": value, "found": true})
+}
+
+type kvPutRequest struct {
+	Value string `json:"value"`
+}
+
+func (s *Server) handlePut(c *gin.Context) {
+	if !s.node.IsLeader() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":    "not the leader",
+			"leaderID": s.node.LeaderID(),
+		})
+		return
+	}
+
+	key := c.Param("key")
+	var req kvPutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	cmd, err := json.Marshal(storage.Entry{Op: storage.OpUpsert, Key: key, Value: req.Value})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := s.node.Replicate(cmd); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": req.Value})
+}
+
+func (s *Server) handleDelete(c *gin.Context) {
+	if !s.node.IsLeader() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":    "not the leader",
+			"leaderID": s.node.LeaderID(),
+		})
+		return
+	}
+
+	key := c.Param("key")
+	cmd, err := json.Marshal(storage.Entry{Op: storage.OpDelete, Key: key})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := s.node.Replicate(cmd); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }

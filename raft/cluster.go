@@ -33,7 +33,7 @@ func NewCluster(n int, latency time.Duration) (*Cluster, []*Node) {
 				peers = append(peers, pid)
 			}
 		}
-		nodes[i] = NewNode(id, peers, c.transportFor(id))
+		nodes[i] = NewNode(id, peers, c.transportFor(id), nil)
 		c.nodes[id] = nodes[i]
 	}
 	return c, nodes

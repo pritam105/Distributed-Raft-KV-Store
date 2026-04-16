@@ -15,8 +15,12 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
-	Term     uint64
-	LeaderID string
+	Term         uint64
+	LeaderID     string
+	PrevLogIndex uint64
+	PrevLogTerm  uint64
+	Entries      []LogEntry
+	LeaderCommit uint64
 }
 
 type AppendEntriesReply struct {

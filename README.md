@@ -1,450 +1,332 @@
-# Distributed-Raft-KV-Store
+# Distributed Raft KV Store
 
-## What we have so far
-
-Right now this repo contains a simple single-node key-value store in Go.
-
-It supports:
-
-- upsert a key
-- read a key
-- delete a key
-- optional WAL (write-ahead log)
-- optional snapshot persistence
-- recovery from persisted snapshot data and WAL replay
-- a small HTTP service for local testing
-
-This is the local building block we can later place behind Raft replication and sharding.
-
-## Simple architecture
-
-The current flow is:
-
-1. A client sends an HTTP request.
-2. The HTTP server reads the request and calls the KV store.
-3. The KV store appends the write to the WAL if WAL is enabled.
-4. The KV store updates the in-memory map.
-5. The KV store saves the full map as a snapshot if snapshots are enabled.
-6. On restart, the service loads the snapshot first and then replays the WAL.
-
-## Important files
-
-### Core KV store
-
-- `kv/store.go`
-  This is the in-memory key-value store. It supports `Upsert`, `Get`, `Delete`, and startup recovery from snapshot + WAL.
-
-- `kv/apply.go`
-  Small helper that applies a storage entry to the store. This is useful later when Raft hands committed entries to the store.
-
-### Persistence
-
-- `storage/logstore.go`
-  Contains the WAL implementation.
-  It defines:
-  - `Entry`: one operation in the log
-  - `WAL`: interface for append/load/close
-  - `FileWAL`: real WAL on disk
-  - `NoopWAL`: disabled WAL mode
-
-- `storage/snapshot.go`
-  Contains snapshot persistence.
-  It defines:
-  - `SnapshotStore`: interface for save/load
-  - `FileSnapshot`: stores the full KV map as JSON on disk
-  - `NoopSnapshot`: disabled snapshot mode
-
-- `storage/persistence.go`
-  Small configuration wrapper used to open WAL and snapshot persistence.
-
-### HTTP service
-
-- `api/http.go`
-  The HTTP API layer. It exposes endpoints for health checks and key operations.
-
-- `cmd/simplekvs/main.go`
-  Entry point for running the single-node key-value store as a service.
-  It reads environment variables, opens the WAL and snapshot store, restores data, and starts the HTTP server.
-
-### Container setup
-
-- `api/Dockerfile`
-  Dockerfile for building and running the simple HTTP key-value store in a container.
-
-## How persistence works
-
-There are two persistence layers right now:
-
-- WAL
-  Every write operation is recorded as an append-only log entry.
-
-- Snapshot
-  After a successful write, the current full KV map is saved to disk as JSON.
-
-On startup:
-
-1. the latest snapshot is loaded
-2. the WAL is replayed
-3. the in-memory map is rebuilt to the latest state
-
-This gives us a simple version of true persistence while still keeping WAL-based recovery.
-
-## How to run the KV store locally
-
-Run this from the repo root:
-
-```cmd
-go run ./cmd/simplekvs
-```
-
-By default it starts with:
-
-- HTTP address: `:8080`
-- WAL enabled: `true`
-- WAL path: `data/wal.log`
-- snapshot enabled: `true`
-- snapshot path: `data/snapshot.json`
-
-### Environment variables
-
-- `KVS_ADDR`
-  HTTP listen address
-  Example: `:8080`
-
-- `KVS_WAL_ENABLED`
-  Set to `false` to disable WAL
-
-- `KVS_WAL_PATH`
-  Path to WAL file
-
-- `KVS_SNAPSHOT_ENABLED`
-  Set to `false` to disable snapshot persistence
-
-- `KVS_SNAPSHOT_PATH`
-  Path to snapshot file
-
-Example:
-
-```cmd
-set KVS_ADDR=:8080
-set KVS_WAL_ENABLED=true
-set KVS_WAL_PATH=data/wal.log
-set KVS_SNAPSHOT_ENABLED=true
-set KVS_SNAPSHOT_PATH=data/snapshot.json
-go run ./cmd/simplekvs
-```
-
-Example without WAL:
-
-```cmd
-set KVS_WAL_ENABLED=false
-go run ./cmd/simplekvs
-```
-
-Example without snapshot persistence:
-
-```cmd
-set KVS_SNAPSHOT_ENABLED=false
-go run ./cmd/simplekvs
-```
-
-## How to run it as an HTTP service
-
-The service exposes these endpoints:
-
-- `GET /healthz`
-- `PUT /v1/keys/{key}`
-- `GET /v1/keys/{key}`
-- `DELETE /v1/keys/{key}`
-
-Base URL:
-
-```text
-http://localhost:8080
-```
-
-### Example requests
-
-Create or update a key:
-
-```cmd
-curl -X PUT http://localhost:8080/v1/keys/demo -H "Content-Type: application/json" -d "{\"value\":\"hello\"}"
-```
-
-Read a key:
-
-```cmd
-curl http://localhost:8080/v1/keys/demo
-```
-
-Delete a key:
-
-```cmd
-curl -X DELETE http://localhost:8080/v1/keys/demo
-```
-
-Health check:
-
-```cmd
-curl http://localhost:8080/healthz
-```
-
-## How to run with Docker
-
-The Dockerfile lives at `api/Dockerfile`.
-
-Build from the repo root:
-
-```cmd
-docker build -f api/Dockerfile -t simplekvs .
-```
-
-Run the container:
-
-```cmd
-docker run --rm -p 8080:8080 -v "%CD%/data:/data" simplekvs
-```
-
-What this does:
-
-- starts the container
-- maps your machine's port `8080` to the container's port `8080`
-- mounts a local `data` folder into `/data` inside the container
-- stores the WAL file at `/data/wal.log`
-- stores the snapshot file at `/data/snapshot.json`
-
-Run without WAL:
-
-```cmd
-docker run --rm -p 8080:8080 -e KVS_WAL_ENABLED=false simplekvs
-```
-
-Run without snapshot persistence:
-
-```cmd
-docker run --rm -p 8080:8080 -e KVS_SNAPSHOT_ENABLED=false simplekvs
-```
-
-## Raft Leader Election
-
-Implements the Raft consensus algorithm's leader election phase for a single
-shard group of 3-4 nodes. One leader is elected per term, heartbeats keep
-followers stable, and re-election happens automatically when a leader crashes.
-
-### What is implemented
-
-- Follower / Candidate / Leader state machine
-- Randomised election timeout (300–600ms) to prevent split votes
-- Parallel RequestVote RPCs with majority vote counting
-- Leader heartbeats every 100ms via AppendEntries
-- Automatic re-election on leader crash
-- Term monotonicity across elections
-- Node metrics exposed via `/metrics` endpoint
-- Gin HTTP server for node-to-node RPC
-- Docker-based EC2 deployment via Terraform
-
-### Important files
-
-| File | What it does |
-|---|---|
-| `raft/state.go` | NodeState enum with atomic transitions |
-| `raft/log.go` | LogEntry struct and lastIndexAndTerm |
-| `raft/transport.go` | RequestVote + AppendEntries message types |
-| `raft/raft.go` | Node struct, metrics, Start/Stop |
-| `raft/election.go` | Full state machine and RPC handlers |
-| `raft/cluster.go` | In-process transport for tests |
-| `raft/election_test.go` | 5 unit tests |
-| `rpc/server.go` | Gin HTTP server |
-| `rpc/client.go` | HTTP transport for EC2 nodes |
-| `cmd/node/main.go` | Binary entry point |
-
-### Run tests locally
-```bash
-go test ./raft/... -v -timeout 60s
-```
-
-### Run a 3-node cluster locally
-```bash
-# Terminal 1
-RAFT_NODE_ID=nodeA \
-RAFT_PEERS="nodeB@localhost:7001,nodeC@localhost:7002" \
-RAFT_ADDR=:7000 \
-go run ./cmd/node
-
-# Terminal 2
-RAFT_NODE_ID=nodeB \
-RAFT_PEERS="nodeA@localhost:7000,nodeC@localhost:7002" \
-RAFT_ADDR=:7001 \
-go run ./cmd/node
-
-# Terminal 3
-RAFT_NODE_ID=nodeC \
-RAFT_PEERS="nodeA@localhost:7000,nodeB@localhost:7001" \
-RAFT_ADDR=:7002 \
-go run ./cmd/node
-```
-
-Check status:
-```bash
-curl http://localhost:7000/status
-curl http://localhost:7001/status
-curl http://localhost:7002/status
-```
-
-### Deploy to EC2
-```bash
-cd infrastructure/raft_leader_election_infra/terraform
-terraform init
-terraform apply -var="key_name=your-key-name"
-```
-### Check election status on EC2
-
-Once deployed, check which node is leader:
-```bash
-curl http://<nodeA_ip>:7000/status
-curl http://<nodeB_ip>:7000/status
-curl http://<nodeC_ip>:7000/status
-```
-
-Check metrics:
-```bash
-curl http://<nodeA_ip>:7000/metrics
-curl http://<nodeB_ip>:7000/metrics
-curl http://<nodeC_ip>:7000/metrics
-```
-
-Simulate a leader crash:
-```bash
-ssh -i your-key.pem ec2-user@<leader_ip> "sudo systemctl stop raft-node"
-```
-
-Watch re-election happen on the remaining nodes:
-```bash
-curl http://<nodeB_ip>:7000/status
-# will show new leader within ~300-600ms
-```
-
-Restart the crashed node and watch it rejoin as Follower:
-```bash
-ssh -i your-key.pem ec2-user@<leader_ip> "sudo systemctl start raft-node"
-curl http://<leader_ip>:7000/status
-# will show Follower with new higher term
-```
-
-Run the full timing experiment:
-```bash
-python3 infrastructure/raft_leader_election_infra/experiment.py \
-  --node-a <nodeA_ip> \
-  --node-b <nodeB_ip> \
-  --node-c <nodeC_ip> \
-  --key ~/.ssh/your-key.pem \
-  --rounds 5
-```
-### What the tests cover
-
-| Test | What it proves |
-|---|---|
-| `TestElection_3Nodes` | 3 nodes elect exactly one leader |
-| `TestElection_4Nodes` | 4 nodes elect exactly one leader |
-| `TestElection_LeaderCrash` | Leader dies → new leader elected at higher term |
-| `TestElection_FollowerCrash` | Follower dies → leader stays stable |
-| `TestElection_TermIncreases` | Term always increases across re-elections |
-
-### EC2 experiment results (us-west-2, 3x t3.micro)
-
-5 rounds of leader crash + re-election:
-
-| Round | Crashed | New Leader | Time |
-|---|---|---|---|
-| 1 | nodeA | nodeB | 190ms |
-| 2 | nodeB | nodeA | 190ms |
-| 3 | nodeA | nodeC | 381ms |
-| 4 | nodeC | nodeB | 368ms |
-| 5 | nodeB | nodeC | 368ms |
-
-Average re-election time: **299ms**
+A distributed key-value store built in Go with Raft consensus, write-ahead logging, snapshotting, and consistent-hashing-based sharding. Designed for CS6650 with two load-test experiments on AWS EC2.
 
 ---
 
-## Consistent Hashing and Shard Routing
+## Project Status
 
-Distributes keys across independent KV nodes using consistent hashing. A stateless router sits in front of the KV nodes, hashes each key to a shard, and forwards the request to the correct node.
-
-### What is implemented
-
-- FNV-1a consistent hashing — every client and node uses the same deterministic function, no central directory needed
-- Stateless shard router — hashes the key, selects the target shard, forwards `GET`/`PUT`/`DELETE` to the node's existing `/v1/keys/{key}` API
-- Multi-address fallback per shard — router tries each address in order, forward-compatible with Raft leaders
-- Cluster config loaded from environment variables at startup
-- CLI client (`cmd/client`) with `get`, `put`, `del` commands — prints the resolved shard ID alongside each result
-
-### Important files
-
-| File | What it does |
+| Component | Status |
 |---|---|
-| `shard/hashing.go` | `KeyToShard(key, total)` — FNV-1a hash mod total shards |
-| `shard/shard_group.go` | `Shard` struct — ID + list of node addresses |
-| `shard/router.go` | `Router` — routes and forwards Get/Put/Delete |
-| `config/config.go` | `LoadFromEnv()` — builds cluster topology from env vars |
-| `cmd/client/main.go` | CLI entry point |
-| `functional/sharding_test.go` | Functional tests for hashing, routing, and config |
+| SimpleKVS — single-node KV with WAL + snapshot | Done |
+| Raft leader election | Done |
+| Raft log replication (full write path) | Done |
+| KV store wired into Raft node | Done |
+| Consistent hashing + shard router | Done |
+| CLI client | Done |
+| Experiment 1: Replication overhead (SimpleKVS vs Raft) | **Done — results collected** |
+| Experiment 2: Horizontal scaling (1-shard vs 2-shard) | **Pending — infra ready, tests not run yet** |
 
-### Run a 2-shard setup locally
+---
+
+## Architecture Overview
+
+### End-to-end write flow (Raft node)
+
+```
+Client PUT
+  → rpc/server.go (HTTP handler)
+  → node.Replicate(cmd)               # encodes entry as JSON, appends to in-memory Raft log
+      → replicateToPeer() × 2         # sends AppendEntries RPC to both followers in parallel
+      → majority ack received
+      → advanceCommitIndex()
+      → applyCommitted() → applyCh    # pushes committed entry onto buffered channel
+  ← HTTP 200 returned to client
+
+(async, separate goroutine)
+  → kv.RunApplyLoop() reads from applyCh
+  → store.Apply(entry)                # writes to in-memory map + WAL
+  → every 100 writes: snapshot flush to disk
+```
+
+**Key design point**: the HTTP ack is sent after majority Raft replication (in-memory on peers), NOT after disk flush. This is faster but means a simultaneous crash of all 3 nodes before `RunApplyLoop` processes the entry could lose that write.
+
+### End-to-end read flow
+
+```
+Client GET → rpc/server.go → store.Get() → return value
+```
+
+Reads bypass Raft entirely — served directly from the leader's in-memory map. This is a **stale read** design: followers could return slightly older values if they lag behind. Acceptable for this project scope.
+
+---
+
+## Repository Layout
+
+```
+cmd/
+  node/         — Raft node binary (full stack: Raft + KV + WAL + snapshot)
+  simplekvs/    — Single-node KV binary (baseline for replication experiment)
+  client/       — CLI client with shard-aware routing
+
+raft/
+  raft.go       — Node struct, fields: commitIndex, lastApplied, nextIndex, matchIndex, applyCh
+  election.go   — Follower/Candidate/Leader state machine, RequestVote, HandleAppendEntries
+  replication.go — Replicate(), replicateToPeer(), sendHeartbeatToPeer(), applyCommitted()
+  log.go        — In-memory Raft log: entryAt, appendEntry, truncateAfter, entriesFrom
+  transport.go  — AppendEntriesArgs/Reply, RequestVoteArgs/Reply structs
+  cluster.go    — In-process transport for unit tests
+
+kv/
+  store.go      — In-memory map with WAL append + periodic snapshot (every 100 writes)
+  apply.go      — Apply(entry) method + RunApplyLoop(applyCh, store) goroutine
+
+storage/
+  logstore.go   — WAL: FileWAL (append-only) and NoopWAL
+  snapshot.go   — Snapshot: FileSnapshot (full JSON map) and NoopSnapshot
+  persistence.go — Config wrapper to open WAL and snapshot
+
+shard/
+  hashing.go    — KeyToShard(key, total) using FNV-1a (matches Locust experiment script)
+  shard_group.go — Shard struct: ID + list of node addresses
+  router.go     — Stateless HTTP router: hashes key → shard → forwards request
+
+config/
+  config.go     — LoadFromEnv(): reads CLIENT_SHARDS_TOTAL + CLIENT_SHARD_N_ADDRS
+
+rpc/
+  server.go     — Gin HTTP server: /status, /vote, /append, /v1/keys/*
+  client.go     — HTTP transport for inter-node Raft RPCs
+
+api/
+  http.go       — SimpleKVS HTTP API (used only by cmd/simplekvs)
+
+functional/     — Integration tests for sharding and routing
+infrastructure/
+  experiments/
+    Dockerfile                          — Multi-stage build: produces node + simplekvs binaries
+    entrypoint.sh                       — Selects binary via SERVICE_TYPE env var
+    replication_overhead/               — Experiment 1
+      terraform/                        — AWS infra: 3 Raft nodes + 1 SimpleKVS on t3.micro
+      experiment.py                     — Locust: SimpleKVSUser and RaftUser (75% write / 25% read)
+      results/                          — PDF reports from completed runs
+      restart_nodes.sh                  — SSH into all nodes, pull latest image, restart service
+      reset_nodes.sh                    — Clear WAL + snapshot on all nodes for a clean test run
+    horizontal_scaling/                 — Experiment 2
+      terraform/                        — AWS infra: 6 Raft nodes (2 shards of 3)
+      experiment.py                     — Locust: ShardedUser with FNV-1a shard routing
+```
+
+---
+
+## Persistence Design
+
+Two persistence layers, both in `storage/`:
+
+- **WAL** — every write is appended as a log entry before the in-memory map is updated
+- **Snapshot** — full map serialized to JSON every 100 writes (configurable via `snapshotInterval`)
+
+On startup (`kv.NewStoreFromDisk`):
+1. Load snapshot → rebuild map
+2. Replay WAL entries after snapshot → bring map to latest state
+
+**Known limitation**: the Raft log is in-memory only. On node restart the Raft log is empty, so the leader re-replicates all committed entries to the restarted follower via `AppendEntries`. The entries are re-applied through the WAL (idempotent), but this causes WAL duplication. Fixing this would require persisting `lastApplied` to disk — out of scope for now.
+
+---
+
+## Running Locally
+
+### Build first (avoids compile-time races between nodes)
 
 ```bash
-# Terminal 1 — shard 0
-go run ./cmd/simplekvs
+go build -o bin/node ./cmd/node
+go build -o bin/simplekvs ./cmd/simplekvs
+go build -o bin/client ./cmd/client
+```
 
-# Terminal 2 — shard 1
-KVS_ADDR=:8081 KVS_WAL_PATH=data/wal1.log KVS_SNAPSHOT_PATH=data/snap1.json \
-go run ./cmd/simplekvs
+### 3-node Raft cluster
 
-# Terminal 3 — use the CLI client
+```bash
+# Terminal 1
+RAFT_NODE_ID=nodeA \
+RAFT_PEERS="nodeB@localhost:8001,nodeC@localhost:8002" \
+RAFT_ADDR=:8000 \
+RAFT_WAL_PATH=data/nodeA/wal.log \
+RAFT_SNAPSHOT_PATH=data/nodeA/snapshot.json \
+./bin/node
+
+# Terminal 2
+RAFT_NODE_ID=nodeB \
+RAFT_PEERS="nodeA@localhost:8000,nodeC@localhost:8002" \
+RAFT_ADDR=:8001 \
+RAFT_WAL_PATH=data/nodeB/wal.log \
+RAFT_SNAPSHOT_PATH=data/nodeB/snapshot.json \
+./bin/node
+
+# Terminal 3
+RAFT_NODE_ID=nodeC \
+RAFT_PEERS="nodeA@localhost:8000,nodeB@localhost:8001" \
+RAFT_ADDR=:8002 \
+RAFT_WAL_PATH=data/nodeC/wal.log \
+RAFT_SNAPSHOT_PATH=data/nodeC/snapshot.json \
+./bin/node
+```
+
+Find the leader:
+```bash
+curl http://localhost:8000/status
+curl http://localhost:8001/status
+curl http://localhost:8002/status
+```
+
+Test writes and reads (use the leader's port):
+```bash
+curl -X PUT http://localhost:8000/v1/keys/name \
+  -H "Content-Type: application/json" -d '{"value":"alice"}'
+
+curl http://localhost:8000/v1/keys/name
+curl -X DELETE http://localhost:8000/v1/keys/name
+```
+
+Test failure recovery — kill the leader and watch re-election:
+```bash
+# Kill leader process, then check another node
+curl http://localhost:8001/status   # new leader elected within ~300-600ms
+```
+
+### Shard-aware CLI client
+
+```bash
 export CLIENT_SHARDS_TOTAL=2
-export CLIENT_SHARD_0_ADDRS=http://localhost:8080
-export CLIENT_SHARD_1_ADDRS=http://localhost:8081
+export CLIENT_SHARD_0_ADDRS=http://localhost:8000
+export CLIENT_SHARD_1_ADDRS=http://localhost:8001
 
-go run ./cmd/client put name alice
-go run ./cmd/client put city london
-go run ./cmd/client get name
-go run ./cmd/client get city
-go run ./cmd/client del name
+./bin/client put name alice
+./bin/client put city london
+./bin/client get name       # prints: name = alice  (shard 1)
+./bin/client del name
 ```
 
-Each response prints which shard the key landed on:
+---
 
-```
-ok  (shard 1)
-ok  (shard 0)
-name = alice  (shard 1)
-city = london  (shard 0)
-deleted  (shard 1)
-```
-
-### Environment variables
-
-| Variable | Description | Example |
-|---|---|---|
-| `CLIENT_SHARDS_TOTAL` | Total number of shards | `2` |
-| `CLIENT_SHARD_0_ADDRS` | Comma-separated addresses for shard 0 | `http://localhost:8080,http://localhost:8081` |
-| `CLIENT_SHARD_N_ADDRS` | Addresses for shard N | `http://localhost:8090` |
-
-### Run the sharding tests
+## Tests
 
 ```bash
-go test ./functional/... -v -run "TestHashing|TestRouter|TestConfig" -timeout 30s
+# Raft unit tests (election, replication)
+go test ./raft/... -v -timeout 60s
+
+# Sharding + routing functional tests
+go test ./functional/... -v -timeout 30s
 ```
 
-### What the tests cover
+### Raft test coverage
 
-| Test | What it proves |
+| Test | What it verifies |
 |---|---|
-| `TestHashingIsDeterministic` | Same key always maps to the same shard |
-| `TestHashingResultIsInRange` | Hash output is always within `[0, totalShards)` |
+| `TestElection_3Nodes` | 3 nodes elect exactly one leader |
+| `TestElection_LeaderCrash` | Leader crash → new leader at higher term |
+| `TestElection_FollowerCrash` | Follower crash → leader stays stable |
+| `TestElection_TermIncreases` | Term always increases across re-elections |
+
+### Sharding test coverage
+
+| Test | What it verifies |
+|---|---|
+| `TestHashingIsDeterministic` | Same key always maps to same shard |
 | `TestHashingDistributesAcrossTwoShards` | Keys spread across both shards |
-| `TestRouterPutAndGet` | Basic write + read through the router |
-| `TestRouterDelete` | Key is absent after delete |
-| `TestRouterTwoShardsIsolation` | Data on shard 0 is invisible on shard 1 |
+| `TestRouterPutAndGet` | Write + read through the router |
+| `TestRouterTwoShardsIsolation` | Data on shard 0 is not visible on shard 1 |
 | `TestRouterFallbackToNextAddress` | Router skips a dead node and uses the next |
-| `TestConfigLoadFromEnv` | Env vars parse into the correct shard topology |
-| `TestConfigLoadFromEnvMissingAddr` / `InvalidTotal` | Bad config is rejected |
+| `TestConfigLoadFromEnv` | Env vars parse into correct shard topology |
+
+---
+
+## Experiments
+
+All experiments run on AWS (us-east-1, t3.micro). Locust load tests run from your laptop.
+
+### Experiment 1: Replication Overhead — COMPLETED
+
+**Question**: How much latency does Raft consensus replication add over a single-node store under write-heavy load?
+
+**Setup**: 50 users, 75% PUT / 25% GET, ~90 seconds, same AZ.
+
+| Metric | SimpleKVS | Raft (3-node) |
+|---|---|---|
+| Total RPS | 540 | 585 |
+| PUT avg latency | 67.6ms | 57.5ms |
+| PUT p50 | 60ms | 52ms |
+| PUT p95 | 110ms | 97ms |
+| PUT max | 650ms | 1200ms |
+| GET failures | 299 (404 — expected) | 0 |
+
+**Findings**:
+- Raft showed lower average and median write latency than SimpleKVS in this run. This is because the Raft apply loop is async — the HTTP ack is sent before the disk flush, while SimpleKVS flushes the WAL synchronously before responding.
+- Raft's tail latency (max 1200ms) is higher, reflecting occasional Raft consensus coordination delays.
+- Same-AZ intra-cluster RPCs add ~1-2ms network overhead per replication round, which is negligible.
+
+Full reports: `infrastructure/experiments/replication_overhead/results/`
+
+**Helper scripts**:
+```bash
+# Pull latest image + restart all nodes
+./infrastructure/experiments/replication_overhead/restart_nodes.sh ~/Downloads/labsuser.pem
+
+# Clear WAL + snapshot on all nodes before a clean test run
+./infrastructure/experiments/replication_overhead/reset_nodes.sh ~/Downloads/labsuser.pem
+# Wait ~5s after reset for Raft re-election before starting Locust
+```
+
+---
+
+### Experiment 2: Horizontal Scaling — PENDING
+
+**Question**: Does throughput scale linearly when adding a second shard (6 nodes total) vs a single shard (3 nodes)?
+
+**Setup**: 2 shards × 3 Raft nodes each. Locust uses FNV-1a to route keys to the correct shard — same hash function as `shard/hashing.go`.
+
+**Infra**: `infrastructure/experiments/horizontal_scaling/terraform/`
+
+**Steps to run**:
+
+```bash
+# 1. Deploy (AWS Academy, us-east-1)
+cd infrastructure/experiments/horizontal_scaling/terraform
+terraform init
+terraform apply -var="key_name=vockey" -var="docker_image=pritammane105/raft-kv:latest"
+
+# 2. Find both shard leaders via status_urls output
+# 3. Run 1-shard baseline
+CLIENT_SHARDS_TOTAL=1 \
+CLIENT_SHARD_0_ADDRS=http://<shard0-leader>:8000 \
+locust -f infrastructure/experiments/horizontal_scaling/experiment.py ShardedUser \
+  --host http://<shard0-leader>:8000 \
+  --users 100 --spawn-rate 10 --run-time 60s --headless --csv results_1shard
+
+# 4. Run 2-shard test
+CLIENT_SHARDS_TOTAL=2 \
+CLIENT_SHARD_0_ADDRS=http://<shard0-leader>:8000 \
+CLIENT_SHARD_1_ADDRS=http://<shard1-leader>:8000 \
+locust -f infrastructure/experiments/horizontal_scaling/experiment.py ShardedUser \
+  --host http://<shard0-leader>:8000 \
+  --users 100 --spawn-rate 10 --run-time 60s --headless --csv results_2shard
+
+# 5. Teardown
+terraform destroy -var="key_name=vockey" -var="docker_image=pritammane105/raft-kv:latest"
+```
+
+**Expected outcome**: ~2× throughput improvement (RPS) with 2 shards since each shard handles an independent write quorum.
+
+---
+
+## Docker Image
+
+The single image contains both `node` and `simplekvs` binaries. `SERVICE_TYPE` controls which one runs.
+
+```bash
+# Build for EC2 (linux/amd64 — required when building on Apple Silicon)
+docker buildx build --platform linux/amd64 \
+  -f infrastructure/experiments/Dockerfile \
+  -t pritammane105/raft-kv:latest --push .
+```
+
+Environment variables for the Raft node container:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVICE_TYPE` | `node` | `node` or `simplekvs` |
+| `RAFT_NODE_ID` | — | Unique node ID |
+| `RAFT_PEERS` | — | `id@host:port,id@host:port` |
+| `RAFT_ADDR` | — | Listen address e.g. `0.0.0.0:8000` |
+| `RAFT_WAL_PATH` | `data/wal.log` | WAL file path |
+| `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path |

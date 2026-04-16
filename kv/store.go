@@ -9,18 +9,23 @@ import (
 
 var ErrEmptyKey = errors.New("key cannot be empty")
 
+const DefaultSnapshotInterval = 100
+
 type Store struct {
-	mu       sync.RWMutex
-	data     map[string]string
-	wal      storage.WAL
-	snapshot storage.SnapshotStore
+	mu               sync.RWMutex
+	data             map[string]string
+	wal              storage.WAL
+	snapshot         storage.SnapshotStore
+	writeCount       int
+	snapshotInterval int // snapshot every N writes; 0 = disabled
 }
 
 func NewStore(wal storage.WAL, snapshot storage.SnapshotStore) *Store {
 	return &Store{
-		data:     make(map[string]string),
-		wal:      wal,
-		snapshot: snapshot,
+		data:             make(map[string]string),
+		wal:              wal,
+		snapshot:         snapshot,
+		snapshotInterval: DefaultSnapshotInterval,
 	}
 }
 
@@ -134,7 +139,12 @@ func (s *Store) persistAndApplyLocked(entry storage.Entry) error {
 
 	s.applyLocked(entry)
 
-	if s.snapshot == nil {
+	if s.snapshot == nil || s.snapshotInterval == 0 {
+		return nil
+	}
+
+	s.writeCount++
+	if s.writeCount%s.snapshotInterval != 0 {
 		return nil
 	}
 

@@ -48,23 +48,32 @@ type Node struct {
 	votedFor    string
 	log         *logStore
 
+	commitIndex uint64
+	lastApplied uint64
+	nextIndex   map[string]uint64
+	matchIndex  map[string]uint64
+
 	state atomicState
 
 	transport Transport
 	Metrics   *NodeMetrics
+	applyCh   chan []byte // committed commands sent to KV apply loop; nil = disabled
 
 	resetTimerCh chan struct{}
 	stepDownCh   chan uint64
 	stopCh       chan struct{}
 }
 
-func NewNode(id string, peers []string, t Transport) *Node {
+func NewNode(id string, peers []string, t Transport, applyCh chan []byte) *Node {
 	n := &Node{
 		id:           id,
 		peers:        peers,
 		log:          newLogStore(),
 		transport:    t,
 		Metrics:      &NodeMetrics{},
+		applyCh:      applyCh,
+		nextIndex:    make(map[string]uint64),
+		matchIndex:   make(map[string]uint64),
 		resetTimerCh: make(chan struct{}, 8),
 		stepDownCh:   make(chan uint64, 4),
 		stopCh:       make(chan struct{}),
