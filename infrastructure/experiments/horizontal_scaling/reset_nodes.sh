@@ -7,30 +7,24 @@ set -euo pipefail
 
 PEM=~/Downloads/labsuser.pem
 
-RAFT_NODES=(
-  "100.48.44.193"
-  "13.219.179.116"
-  "18.205.41.121"
+NODES=(
+  "3.236.225.29"
+  "100.54.101.62"
+  "3.238.236.168"
+  "100.53.242.242"
+  "3.239.58.189"
+  "3.235.173.220"
 )
-SIMPLEKVS="98.93.5.127"
 
-reset_node() {
-  local ip=$1
-  local service=$2
+for ip in "${NODES[@]}"; do
   echo "=== Resetting $ip ==="
   ssh -i "$PEM" -o StrictHostKeyChecking=no ec2-user@"$ip" "
-    sudo systemctl stop $service || true
+    sudo systemctl stop raft-node || true
     sudo rm -f /data/wal.log /data/snapshot.json
-    sudo systemctl start $service
+    sudo systemctl start raft-node
   "
   echo "=== Done $ip ==="
-}
-
-for ip in "${RAFT_NODES[@]}"; do
-  reset_node "$ip" "raft-node"
 done
 
-reset_node "$SIMPLEKVS" "simplekvs"
-
 echo ""
-echo "All nodes reset. Wait ~5 seconds for Raft election before running Locust."
+echo "All nodes reset. Wait ~5 seconds for Raft elections before running Locust."

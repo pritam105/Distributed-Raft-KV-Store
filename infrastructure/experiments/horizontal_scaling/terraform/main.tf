@@ -80,7 +80,8 @@ resource "aws_security_group" "exp" {
 }
 
 # ── Fixed private IPs ─────────────────────────────────────────────────────────
-# Shard 0: offsets 10-12   Shard 1: offsets 13-15
+# Shard 0: offsets 20-22   Shard 1: offsets 23-25
+# (offsets 10-13 are used by the replication_overhead experiment)
 
 locals {
   subnet_cidr = data.aws_subnet.first.cidr_block
@@ -88,16 +89,16 @@ locals {
 
   shard0_ids = ["nodeA", "nodeB", "nodeC"]
   shard0_ips = [
-    cidrhost(local.subnet_cidr, 10),
-    cidrhost(local.subnet_cidr, 11),
-    cidrhost(local.subnet_cidr, 12),
+    cidrhost(local.subnet_cidr, 20),
+    cidrhost(local.subnet_cidr, 21),
+    cidrhost(local.subnet_cidr, 22),
   ]
 
   shard1_ids = ["nodeD", "nodeE", "nodeF"]
   shard1_ips = [
-    cidrhost(local.subnet_cidr, 13),
-    cidrhost(local.subnet_cidr, 14),
-    cidrhost(local.subnet_cidr, 15),
+    cidrhost(local.subnet_cidr, 23),
+    cidrhost(local.subnet_cidr, 24),
+    cidrhost(local.subnet_cidr, 25),
   ]
 
   shard0_peers = [

@@ -27,6 +27,11 @@ import string
 
 from locust import HttpUser, between, task
 
+# Shared set of keys confirmed written — reads only query keys that exist.
+# Locust uses gevent (cooperative multitasking) so a plain list is safe.
+WRITTEN_KEYS: list[str] = []
+MAX_TRACKED_KEYS = 5000
+
 
 def fnv1a_32(s: str) -> int:
     """FNV-1a 32-bit — matches Go's fnv.New32a() used in shard/hashing.go."""
@@ -61,11 +66,6 @@ TOTAL_SHARDS, SHARD_MAP = build_shard_map()
 
 
 class ShardedUser(HttpUser):
-    """
-    Sends requests via the shard router logic (hashes key → shard → node).
-    Locust's self.client is used for the actual HTTP calls so metrics are
-    captured per endpoint.
-    """
     wait_time = between(0.01, 0.05)
 
     @task(3)
@@ -73,22 +73,27 @@ class ShardedUser(HttpUser):
         key = f"key-{random.randint(0, 9999)}"
         shard_id = key_to_shard(key, TOTAL_SHARDS)
         addrs = SHARD_MAP.get(shard_id, SHARD_MAP[0])
-        target = random.choice(addrs)  # try any node; leader will accept
-        self.client.put(
-            f"/v1/keys/{key}",
+        target = random.choice(addrs)
+        resp = self.client.put(
+            f"{target}/v1/keys/{key}",
             json={"value": random_value()},
             name=f"/v1/keys/[key] PUT shard{shard_id}",
-            base_url=target,
         )
+        if resp and resp.status_code == 200:
+            if len(WRITTEN_KEYS) < MAX_TRACKED_KEYS:
+                WRITTEN_KEYS.append(key)
+            else:
+                WRITTEN_KEYS[random.randint(0, MAX_TRACKED_KEYS - 1)] = key
 
     @task(1)
     def read(self):
-        key = f"key-{random.randint(0, 9999)}"
+        if not WRITTEN_KEYS:
+            return  # skip until at least one key has been written
+        key = random.choice(WRITTEN_KEYS)
         shard_id = key_to_shard(key, TOTAL_SHARDS)
         addrs = SHARD_MAP.get(shard_id, SHARD_MAP[0])
         target = random.choice(addrs)
         self.client.get(
-            f"/v1/keys/{key}",
+            f"{target}/v1/keys/{key}",
             name=f"/v1/keys/[key] GET shard{shard_id}",
-            base_url=target,
         )
