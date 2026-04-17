@@ -16,6 +16,7 @@ A distributed key-value store built in Go with Raft consensus, write-ahead loggi
 | CLI client | Done |
 | Experiment 1: Replication overhead (SimpleKVS vs Raft) | **Done — results collected** |
 | Experiment 2: Horizontal scaling (1-shard vs 2-shard) | **Pending — infra ready, tests not run yet** |
+| Experiment 3: Leader election failover (re-election + data survival) | **Done — results collected** |
 
 ---
 
@@ -330,3 +331,28 @@ Environment variables for the Raft node container:
 | `RAFT_ADDR` | — | Listen address e.g. `0.0.0.0:8000` |
 | `RAFT_WAL_PATH` | `data/wal.log` | WAL file path |
 | `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path |
+
+### Experiment 3: Leader Election & Failover — COMPLETED
+
+**Question**: Does the cluster automatically re-elect a leader under live write load, and is data preserved during failover?
+
+**Setup**: 3 Raft nodes on t3.micro, us-east-1. 20 Locust users, 75% PUT / 25% GET. Leader stopped via AWS CLI mid-load.
+
+| Metric | Value |
+|---|---|
+| Re-election time (min) | 641ms |
+| Re-election time (max) | 1739ms |
+| Re-election time (avg) | ~1200ms |
+| Total data loss | 0 keys |
+| Pre-crash writes survived | 100% |
+| Locust RPS baseline | 183 RPS |
+
+**Findings**:
+- Zero data loss — Raft replication guarantees committed writes survive leader failure
+- Re-election is automatic — cluster self-heals with no manual intervention
+- Locust shows clear V-shape: RPS drops to 0 during crash, recovers after re-election
+- Leader-only writes enforced — followers return 503 correctly during re-election gap
+
+**Results**: `infrastructure/experiments/leader_election/results/leader_election_failover.png`
+
+**Infra**: `infrastructure/experiments/leader_election/terraform/`
