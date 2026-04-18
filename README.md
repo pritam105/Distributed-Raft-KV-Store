@@ -15,7 +15,7 @@ A distributed key-value store built in Go with Raft consensus, write-ahead loggi
 | Consistent hashing + shard router | Done |
 | CLI client | Done |
 | Experiment 1: Replication overhead (SimpleKVS vs Raft) | **Done — results collected** |
-| Experiment 2: Horizontal scaling (1-shard vs 2-shard) | **Pending — infra ready, tests not run yet** |
+| Experiment 2: Horizontal scaling (1-shard vs 2-shard) | **Done — results collected** |
 | Experiment 3: Leader election failover (re-election + data survival) | **Done — results collected** |
 
 ---
@@ -258,79 +258,48 @@ All experiments run on AWS (us-east-1, t3.micro). Locust load tests run from you
 
 Full reports: `infrastructure/experiments/replication_overhead/results/`
 
-**Helper scripts**:
+**Helper scripts** (PEM path hardcoded in scripts):
 ```bash
-# Pull latest image + restart all nodes
-./infrastructure/experiments/replication_overhead/restart_nodes.sh ~/Downloads/labsuser.pem
-
-# Clear WAL + snapshot on all nodes before a clean test run
-./infrastructure/experiments/replication_overhead/reset_nodes.sh ~/Downloads/labsuser.pem
+./infrastructure/experiments/replication_overhead/reset_nodes.sh    # clear data, restart clean
+./infrastructure/experiments/replication_overhead/restart_nodes.sh  # pull new image + restart
 # Wait ~5s after reset for Raft re-election before starting Locust
 ```
 
----
-
-### Experiment 2: Horizontal Scaling — PENDING
-
-**Question**: Does throughput scale linearly when adding a second shard (6 nodes total) vs a single shard (3 nodes)?
-
-**Setup**: 2 shards × 3 Raft nodes each. Locust uses FNV-1a to route keys to the correct shard — same hash function as `shard/hashing.go`.
-
-**Infra**: `infrastructure/experiments/horizontal_scaling/terraform/`
-
-**Steps to run**:
-
-```bash
-# 1. Deploy (AWS Academy, us-east-1)
-cd infrastructure/experiments/horizontal_scaling/terraform
-terraform init
-terraform apply -var="key_name=vockey" -var="docker_image=pritammane105/raft-kv:latest"
-
-# 2. Find both shard leaders via status_urls output
-# 3. Run 1-shard baseline
-CLIENT_SHARDS_TOTAL=1 \
-CLIENT_SHARD_0_ADDRS=http://<shard0-leader>:8000 \
-locust -f infrastructure/experiments/horizontal_scaling/experiment.py ShardedUser \
-  --host http://<shard0-leader>:8000 \
-  --users 100 --spawn-rate 10 --run-time 60s --headless --csv results_1shard
-
-# 4. Run 2-shard test
-CLIENT_SHARDS_TOTAL=2 \
-CLIENT_SHARD_0_ADDRS=http://<shard0-leader>:8000 \
-CLIENT_SHARD_1_ADDRS=http://<shard1-leader>:8000 \
-locust -f infrastructure/experiments/horizontal_scaling/experiment.py ShardedUser \
-  --host http://<shard0-leader>:8000 \
-  --users 100 --spawn-rate 10 --run-time 60s --headless --csv results_2shard
-
-# 5. Teardown
-terraform destroy -var="key_name=vockey" -var="docker_image=pritammane105/raft-kv:latest"
-```
-
-**Expected outcome**: ~2× throughput improvement (RPS) with 2 shards since each shard handles an independent write quorum.
+Full report: `infrastructure/experiments/replication_overhead/results/report.md`
 
 ---
 
-## Docker Image
+### Experiment 2: Horizontal Scaling — COMPLETED
 
-The single image contains both `node` and `simplekvs` binaries. `SERVICE_TYPE` controls which one runs.
+**Question**: Does write throughput scale linearly when adding a second shard (6 nodes) vs a single shard (3 nodes)?
 
+**Setup**: 2 shards × 3 Raft nodes each. 100 concurrent users, 75% PUT / 25% GET. Locust routes keys via FNV-1a — same function as `shard/hashing.go`.
+
+| Metric | 1-Shard 50u | 1-Shard 100u | 2-Shard 100u |
+|---|---|---|---|
+| Total RPS | 565 | 555 | **945** |
+| PUT avg latency | 61ms | 180ms | 40–123ms per shard |
+| PUT p50 | 54ms | 170ms | **38ms** (shard1) |
+| PUT p95 | 100ms | 380ms | **50ms** (shard1) |
+| PUT failures | 0 | 0 | 0 |
+
+**Key findings**:
+- 2-shard achieved **~1.7× throughput improvement** (555 → 945 total RPS). Short of theoretical 2× due to 25% read traffic and hash distribution variance.
+- A single Raft leader on t3.micro **saturates at ~50 concurrent users** (~420 writes/sec). Beyond that, latency grows non-linearly (61ms → 180ms avg) while throughput plateaus — confirmed as **disk I/O bound** (CPU peaked at only 12.6%). The bottleneck is the periodic snapshot flush every 100 writes.
+- 2 shards keeps each leader below the saturation point (~50 users each), restoring low latency.
+- A **Raft leader re-election was captured live** during a 2.5-minute extended test — shard1 returned 7,450 HTTP 503s for ~1–2 seconds then self-healed. This demonstrates Raft's consistency guarantee: the cluster refuses writes during elections rather than risk data loss.
+- Snapshot size growth affects write latency directly — shard0 was slower than shard1 in the 2-shard test because it had accumulated more data from the prior 1-shard test run.
+
+**Helper scripts**:
 ```bash
-# Build for EC2 (linux/amd64 — required when building on Apple Silicon)
-docker buildx build --platform linux/amd64 \
-  -f infrastructure/experiments/Dockerfile \
-  -t pritammane105/raft-kv:latest --push .
+./infrastructure/experiments/horizontal_scaling/find_leaders.sh     # print leader per shard
+./infrastructure/experiments/horizontal_scaling/reset_nodes.sh      # clear data, restart clean
+./infrastructure/experiments/horizontal_scaling/restart_nodes.sh    # pull new image + restart
 ```
 
-Environment variables for the Raft node container:
+Full report: `infrastructure/experiments/horizontal_scaling/results/report.md`
 
-| Variable | Default | Description |
-|---|---|---|
-| `SERVICE_TYPE` | `node` | `node` or `simplekvs` |
-| `RAFT_NODE_ID` | — | Unique node ID |
-| `RAFT_PEERS` | — | `id@host:port,id@host:port` |
-| `RAFT_ADDR` | — | Listen address e.g. `0.0.0.0:8000` |
-| `RAFT_WAL_PATH` | `data/wal.log` | WAL file path |
-| `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path |
+---
 
 ### Experiment 3: Leader Election & Failover — COMPLETED
 
@@ -356,3 +325,25 @@ Environment variables for the Raft node container:
 **Results**: `infrastructure/experiments/leader_election/results/leader_election_failover.png`
 
 **Infra**: `infrastructure/experiments/leader_election/terraform/`
+
+---
+
+## Docker Image
+
+The single image contains both `node` and `simplekvs` binaries. `SERVICE_TYPE` controls which one runs.
+
+```bash
+# Build for EC2 (linux/amd64 — required when building on Apple Silicon)
+docker buildx build --platform linux/amd64 \
+  -f infrastructure/experiments/Dockerfile \
+  -t pritammane105/raft-kv:latest --push .
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVICE_TYPE` | `node` | `node` or `simplekvs` |
+| `RAFT_NODE_ID` | — | Unique node ID |
+| `RAFT_PEERS` | — | `id@host:port,id@host:port` |
+| `RAFT_ADDR` | — | Listen address e.g. `0.0.0.0:8000` |
+| `RAFT_WAL_PATH` | `data/wal.log` | WAL file path |
+| `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path |
