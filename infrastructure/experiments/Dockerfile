@@ -12,5 +12,5 @@ COPY --from=builder /bin/node      /usr/local/bin/node
 COPY --from=builder /bin/simplekvs /usr/local/bin/simplekvs
 COPY --from=builder /bin/client    /usr/local/bin/client
 COPY infrastructure/experiments/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
