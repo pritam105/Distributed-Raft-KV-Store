@@ -107,6 +107,23 @@ infrastructure/
     horizontal_scaling/                 — Experiment 2
       terraform/                        — AWS infra: 6 Raft nodes (2 shards of 3)
       experiment.py                     — Locust: ShardedUser with FNV-1a shard routing
+
+    geo_colocated/                       — Experiment 4 baseline: 3 Raft nodes in one AWS region
+      terraform/                         — AWS infra: VPC, subnet, key pair, and 3 co-located Raft nodes
+      experiment.py                      — Measures write latency, read latency, stale reads, and convergence
+      find_status.sh                     — Checks /status for each node
+      reset_nodes.sh                     — Clears node data and restarts services
+
+    geo_distributed/                     — Experiment 4 multi-region setup: 3 Raft nodes across AWS regions
+      terraform/                         — AWS infra: regional VPCs, subnets, key pairs, Elastic IPs, and Raft nodes
+      experiment.py                      — Same measurement script for comparison against co-located setup
+      find_status.sh                     — Checks /status for each node
+      reset_nodes.sh                     — Clears node data and restarts services
+
+    compare_geo_results.py               — Compares co-located and geo-distributed CSV results
+    geo_tradeoff_report.md               — Generated summary report from CSV comparison
+    geo_tradeoff_README.md               — Detailed writeup of Experiment 4 setup, results, and interpretation
+
 ```
 
 ---
@@ -310,6 +327,34 @@ Full report: `infrastructure/experiments/horizontal_scaling/results/report.md`
 
 ---
 
+### Experiment 3: Leader Election & Failover — COMPLETED
+
+**Question**: Does the cluster automatically re-elect a leader under live write load, and is data preserved during failover?
+
+**Setup**: 3 Raft nodes on t3.micro, us-east-1. 20 Locust users, 75% PUT / 25% GET. Leader stopped via AWS CLI mid-load.
+
+| Metric                    | Value   |
+| ------------------------- | ------- |
+| Re-election time (min)    | 641ms   |
+| Re-election time (max)    | 1739ms  |
+| Re-election time (avg)    | ~1200ms |
+| Total data loss           | 0 keys  |
+| Pre-crash writes survived | 100%    |
+| Locust RPS baseline       | 183 RPS |
+
+**Findings**:
+
+- Zero data loss — Raft replication guarantees committed writes survive leader failure
+- Re-election is automatic — cluster self-heals with no manual intervention
+- Locust shows clear V-shape: RPS drops to 0 during crash, recovers after re-election
+- Leader-only writes enforced — followers return 503 correctly during re-election gap
+
+**Results**: `infrastructure/experiments/leader_election/results/leader_election_failover.png`
+
+**Infra**: `infrastructure/experiments/leader_election/terraform/`
+
+---
+
 ### Experiment 4: Geo-Distribution Tradeoff — COMPLETED
 
 **Question**: How does spreading Raft replicas across AWS regions affect write latency, read latency, and replica convergence compared to placing all replicas in the same region?
@@ -361,7 +406,7 @@ The co-located deployment was better for latency in this experiment. The geo-dis
 
 **Helper scripts**:
 
-````bash
+```bash
 # Co-located deployment
 cd infrastructure/experiments/geo_colocated/terraform
 terraform apply -var='docker_image=shreyansmulkutkar/raft-kv:geo-v2'
@@ -380,31 +425,7 @@ python3 compare_geo_results.py \
   --colocated geo_colocated/terraform/colocated_results.csv \
   --distributed geo_distributed/terraform/geo_distributed_results.csv \
   --output geo_tradeoff_report.md
-
-### Experiment 3: Leader Election & Failover — COMPLETED
-
-**Question**: Does the cluster automatically re-elect a leader under live write load, and is data preserved during failover?
-
-**Setup**: 3 Raft nodes on t3.micro, us-east-1. 20 Locust users, 75% PUT / 25% GET. Leader stopped via AWS CLI mid-load.
-
-| Metric | Value |
-|---|---|
-| Re-election time (min) | 641ms |
-| Re-election time (max) | 1739ms |
-| Re-election time (avg) | ~1200ms |
-| Total data loss | 0 keys |
-| Pre-crash writes survived | 100% |
-| Locust RPS baseline | 183 RPS |
-
-**Findings**:
-- Zero data loss — Raft replication guarantees committed writes survive leader failure
-- Re-election is automatic — cluster self-heals with no manual intervention
-- Locust shows clear V-shape: RPS drops to 0 during crash, recovers after re-election
-- Leader-only writes enforced — followers return 503 correctly during re-election gap
-
-**Results**: `infrastructure/experiments/leader_election/results/leader_election_failover.png`
-
-**Infra**: `infrastructure/experiments/leader_election/terraform/`
+```
 
 ---
 
@@ -417,7 +438,7 @@ The single image contains both `node` and `simplekvs` binaries. `SERVICE_TYPE` c
 docker buildx build --platform linux/amd64 \
   -f infrastructure/experiments/Dockerfile \
   -t pritammane105/raft-kv:latest --push .
-````
+```
 
 | Variable             | Default              | Description                        |
 | -------------------- | -------------------- | ---------------------------------- |
