@@ -6,17 +6,18 @@ A distributed key-value store built in Go with Raft consensus, write-ahead loggi
 
 ## Project Status
 
-| Component                                                            | Status                       |
-| -------------------------------------------------------------------- | ---------------------------- |
-| SimpleKVS — single-node KV with WAL + snapshot                       | Done                         |
-| Raft leader election                                                 | Done                         |
-| Raft log replication (full write path)                               | Done                         |
-| KV store wired into Raft node                                        | Done                         |
-| Consistent hashing + shard router                                    | Done                         |
-| CLI client                                                           | Done                         |
-| Experiment 1: Replication overhead (SimpleKVS vs Raft)               | **Done — results collected** |
-| Experiment 2: Horizontal scaling (1-shard vs 2-shard)                | **Done — results collected** |
-| Experiment 3: Leader election failover (re-election + data survival) | **Done — results collected** |
+| Component                                                                 | Status                       |
+| ------------------------------------------------------------------------- | ---------------------------- |
+| SimpleKVS — single-node KV with WAL + snapshot                            | Done                         |
+| Raft leader election                                                      | Done                         |
+| Raft log replication (full write path)                                    | Done                         |
+| KV store wired into Raft node                                             | Done                         |
+| Consistent hashing + shard router                                         | Done                         |
+| CLI client                                                                | Done                         |
+| Experiment 1: Replication overhead (SimpleKVS vs Raft)                    | **Done — results collected** |
+| Experiment 2: Horizontal scaling (1-shard vs 2-shard)                     | **Done — results collected** |
+| Experiment 3: Leader election failover (re-election + data survival)      | **Done — results collected** |
+| Experiment 4: Geo-distribution tradeoff (co-located vs multi-region Raft) | **Done — results collected** |
 
 ---
 
