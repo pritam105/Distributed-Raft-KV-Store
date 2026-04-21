@@ -6,17 +6,18 @@ A distributed key-value store built in Go with Raft consensus, write-ahead loggi
 
 ## Project Status
 
-| Component | Status |
-|---|---|
-| SimpleKVS — single-node KV with WAL + snapshot | Done |
-| Raft leader election | Done |
-| Raft log replication (full write path) | Done |
-| KV store wired into Raft node | Done |
-| Consistent hashing + shard router | Done |
-| CLI client | Done |
-| Experiment 1: Replication overhead (SimpleKVS vs Raft) | **Done — results collected** |
-| Experiment 2: Horizontal scaling (1-shard vs 2-shard) | **Done — results collected** |
-| Experiment 3: Leader election failover (re-election + data survival) | **Done — results collected** |
+| Component                                                                 | Status                       |
+| ------------------------------------------------------------------------- | ---------------------------- |
+| SimpleKVS — single-node KV with WAL + snapshot                            | Done                         |
+| Raft leader election                                                      | Done                         |
+| Raft log replication (full write path)                                    | Done                         |
+| KV store wired into Raft node                                             | Done                         |
+| Consistent hashing + shard router                                         | Done                         |
+| CLI client                                                                | Done                         |
+| Experiment 1: Replication overhead (SimpleKVS vs Raft)                    | **Done — results collected** |
+| Experiment 2: Horizontal scaling (1-shard vs 2-shard)                     | **Done — results collected** |
+| Experiment 3: Leader election failover (re-election + data survival)      | **Done — results collected** |
+| Experiment 4: Geo-distribution tradeoff (co-located vs multi-region Raft) | **Done — results collected** |
 
 ---
 
@@ -106,6 +107,23 @@ infrastructure/
     horizontal_scaling/                 — Experiment 2
       terraform/                        — AWS infra: 6 Raft nodes (2 shards of 3)
       experiment.py                     — Locust: ShardedUser with FNV-1a shard routing
+
+    geo_colocated/                       — Experiment 4 baseline: 3 Raft nodes in one AWS region
+      terraform/                         — AWS infra: VPC, subnet, key pair, and 3 co-located Raft nodes
+      experiment.py                      — Measures write latency, read latency, stale reads, and convergence
+      find_status.sh                     — Checks /status for each node
+      reset_nodes.sh                     — Clears node data and restarts services
+
+    geo_distributed/                     — Experiment 4 multi-region setup: 3 Raft nodes across AWS regions
+      terraform/                         — AWS infra: regional VPCs, subnets, key pairs, Elastic IPs, and Raft nodes
+      experiment.py                      — Same measurement script for comparison against co-located setup
+      find_status.sh                     — Checks /status for each node
+      reset_nodes.sh                     — Clears node data and restarts services
+
+    compare_geo_results.py               — Compares co-located and geo-distributed CSV results
+    geo_tradeoff_report.md               — Generated summary report from CSV comparison
+    geo_tradeoff_README.md               — Detailed writeup of Experiment 4 setup, results, and interpretation
+
 ```
 
 ---
@@ -118,6 +136,7 @@ Two persistence layers, both in `storage/`:
 - **Snapshot** — full map serialized to JSON every 100 writes (configurable via `snapshotInterval`)
 
 On startup (`kv.NewStoreFromDisk`):
+
 1. Load snapshot → rebuild map
 2. Replay WAL entries after snapshot → bring map to latest state
 
@@ -164,6 +183,7 @@ RAFT_SNAPSHOT_PATH=data/nodeC/snapshot.json \
 ```
 
 Find the leader:
+
 ```bash
 curl http://localhost:8000/status
 curl http://localhost:8001/status
@@ -171,6 +191,7 @@ curl http://localhost:8002/status
 ```
 
 Test writes and reads (use the leader's port):
+
 ```bash
 curl -X PUT http://localhost:8000/v1/keys/name \
   -H "Content-Type: application/json" -d '{"value":"alice"}'
@@ -180,6 +201,7 @@ curl -X DELETE http://localhost:8000/v1/keys/name
 ```
 
 Test failure recovery — kill the leader and watch re-election:
+
 ```bash
 # Kill leader process, then check another node
 curl http://localhost:8001/status   # new leader elected within ~300-600ms
@@ -212,23 +234,23 @@ go test ./functional/... -v -timeout 30s
 
 ### Raft test coverage
 
-| Test | What it verifies |
-|---|---|
-| `TestElection_3Nodes` | 3 nodes elect exactly one leader |
-| `TestElection_LeaderCrash` | Leader crash → new leader at higher term |
-| `TestElection_FollowerCrash` | Follower crash → leader stays stable |
+| Test                         | What it verifies                          |
+| ---------------------------- | ----------------------------------------- |
+| `TestElection_3Nodes`        | 3 nodes elect exactly one leader          |
+| `TestElection_LeaderCrash`   | Leader crash → new leader at higher term  |
+| `TestElection_FollowerCrash` | Follower crash → leader stays stable      |
 | `TestElection_TermIncreases` | Term always increases across re-elections |
 
 ### Sharding test coverage
 
-| Test | What it verifies |
-|---|---|
-| `TestHashingIsDeterministic` | Same key always maps to same shard |
-| `TestHashingDistributesAcrossTwoShards` | Keys spread across both shards |
-| `TestRouterPutAndGet` | Write + read through the router |
-| `TestRouterTwoShardsIsolation` | Data on shard 0 is not visible on shard 1 |
-| `TestRouterFallbackToNextAddress` | Router skips a dead node and uses the next |
-| `TestConfigLoadFromEnv` | Env vars parse into correct shard topology |
+| Test                                    | What it verifies                           |
+| --------------------------------------- | ------------------------------------------ |
+| `TestHashingIsDeterministic`            | Same key always maps to same shard         |
+| `TestHashingDistributesAcrossTwoShards` | Keys spread across both shards             |
+| `TestRouterPutAndGet`                   | Write + read through the router            |
+| `TestRouterTwoShardsIsolation`          | Data on shard 0 is not visible on shard 1  |
+| `TestRouterFallbackToNextAddress`       | Router skips a dead node and uses the next |
+| `TestConfigLoadFromEnv`                 | Env vars parse into correct shard topology |
 
 ---
 
@@ -242,16 +264,17 @@ All experiments run on AWS (us-east-1, t3.micro). Locust load tests run from you
 
 **Setup**: 50 users, 75% PUT / 25% GET, ~90 seconds, same AZ.
 
-| Metric | SimpleKVS | Raft (3-node) |
-|---|---|---|
-| Total RPS | 540 | 585 |
-| PUT avg latency | 67.6ms | 57.5ms |
-| PUT p50 | 60ms | 52ms |
-| PUT p95 | 110ms | 97ms |
-| PUT max | 650ms | 1200ms |
-| GET failures | 299 (404 — expected) | 0 |
+| Metric          | SimpleKVS            | Raft (3-node) |
+| --------------- | -------------------- | ------------- |
+| Total RPS       | 540                  | 585           |
+| PUT avg latency | 67.6ms               | 57.5ms        |
+| PUT p50         | 60ms                 | 52ms          |
+| PUT p95         | 110ms                | 97ms          |
+| PUT max         | 650ms                | 1200ms        |
+| GET failures    | 299 (404 — expected) | 0             |
 
 **Findings**:
+
 - Raft showed lower average and median write latency than SimpleKVS in this run. This is because the Raft apply loop is async — the HTTP ack is sent before the disk flush, while SimpleKVS flushes the WAL synchronously before responding.
 - Raft's tail latency (max 1200ms) is higher, reflecting occasional Raft consensus coordination delays.
 - Same-AZ intra-cluster RPCs add ~1-2ms network overhead per replication round, which is negligible.
@@ -259,6 +282,7 @@ All experiments run on AWS (us-east-1, t3.micro). Locust load tests run from you
 Full reports: `infrastructure/experiments/replication_overhead/results/`
 
 **Helper scripts** (PEM path hardcoded in scripts):
+
 ```bash
 ./infrastructure/experiments/replication_overhead/reset_nodes.sh    # clear data, restart clean
 ./infrastructure/experiments/replication_overhead/restart_nodes.sh  # pull new image + restart
@@ -275,15 +299,16 @@ Full report: `infrastructure/experiments/replication_overhead/results/report.md`
 
 **Setup**: 2 shards × 3 Raft nodes each. 100 concurrent users, 75% PUT / 25% GET. Locust routes keys via FNV-1a — same function as `shard/hashing.go`.
 
-| Metric | 1-Shard 50u | 1-Shard 100u | 2-Shard 100u |
-|---|---|---|---|
-| Total RPS | 565 | 555 | **945** |
-| PUT avg latency | 61ms | 180ms | 40–123ms per shard |
-| PUT p50 | 54ms | 170ms | **38ms** (shard1) |
-| PUT p95 | 100ms | 380ms | **50ms** (shard1) |
-| PUT failures | 0 | 0 | 0 |
+| Metric          | 1-Shard 50u | 1-Shard 100u | 2-Shard 100u       |
+| --------------- | ----------- | ------------ | ------------------ |
+| Total RPS       | 565         | 555          | **945**            |
+| PUT avg latency | 61ms        | 180ms        | 40–123ms per shard |
+| PUT p50         | 54ms        | 170ms        | **38ms** (shard1)  |
+| PUT p95         | 100ms       | 380ms        | **50ms** (shard1)  |
+| PUT failures    | 0           | 0            | 0                  |
 
 **Key findings**:
+
 - 2-shard achieved **~1.7× throughput improvement** (555 → 945 total RPS). Short of theoretical 2× due to 25% read traffic and hash distribution variance.
 - A single Raft leader on t3.micro **saturates at ~50 concurrent users** (~420 writes/sec). Beyond that, latency grows non-linearly (61ms → 180ms avg) while throughput plateaus — confirmed as **disk I/O bound** (CPU peaked at only 12.6%). The bottleneck is the periodic snapshot flush every 100 writes.
 - 2 shards keeps each leader below the saturation point (~50 users each), restoring low latency.
@@ -291,6 +316,7 @@ Full report: `infrastructure/experiments/replication_overhead/results/report.md`
 - Snapshot size growth affects write latency directly — shard0 was slower than shard1 in the 2-shard test because it had accumulated more data from the prior 1-shard test run.
 
 **Helper scripts**:
+
 ```bash
 ./infrastructure/experiments/horizontal_scaling/find_leaders.sh     # print leader per shard
 ./infrastructure/experiments/horizontal_scaling/reset_nodes.sh      # clear data, restart clean
@@ -307,16 +333,17 @@ Full report: `infrastructure/experiments/horizontal_scaling/results/report.md`
 
 **Setup**: 3 Raft nodes on t3.micro, us-east-1. 20 Locust users, 75% PUT / 25% GET. Leader stopped via AWS CLI mid-load.
 
-| Metric | Value |
-|---|---|
-| Re-election time (min) | 641ms |
-| Re-election time (max) | 1739ms |
-| Re-election time (avg) | ~1200ms |
-| Total data loss | 0 keys |
-| Pre-crash writes survived | 100% |
-| Locust RPS baseline | 183 RPS |
+| Metric                    | Value   |
+| ------------------------- | ------- |
+| Re-election time (min)    | 641ms   |
+| Re-election time (max)    | 1739ms  |
+| Re-election time (avg)    | ~1200ms |
+| Total data loss           | 0 keys  |
+| Pre-crash writes survived | 100%    |
+| Locust RPS baseline       | 183 RPS |
 
 **Findings**:
+
 - Zero data loss — Raft replication guarantees committed writes survive leader failure
 - Re-election is automatic — cluster self-heals with no manual intervention
 - Locust shows clear V-shape: RPS drops to 0 during crash, recovers after re-election
@@ -325,6 +352,80 @@ Full report: `infrastructure/experiments/horizontal_scaling/results/report.md`
 **Results**: `infrastructure/experiments/leader_election/results/leader_election_failover.png`
 
 **Infra**: `infrastructure/experiments/leader_election/terraform/`
+
+---
+
+### Experiment 4: Geo-Distribution Tradeoff — COMPLETED
+
+**Question**: How does spreading Raft replicas across AWS regions affect write latency, read latency, and replica convergence compared to placing all replicas in the same region?
+
+**Setup**: One 3-node Raft shard was tested in two deployment modes.
+
+- **Co-located**: all 3 Raft nodes deployed in `us-east-1`
+- **Geo-distributed**: 3 Raft nodes deployed across `us-east-1`, `us-east-2`, and `us-west-2`
+- 100 sequential rounds per setup
+- Each round:
+  - find the current leader
+  - write a unique key to the leader
+  - immediately read the key from all 3 replicas
+  - poll until all replicas return the latest value
+
+| Metric                | Co-located | Geo-distributed |
+| --------------------- | ---------: | --------------: |
+| Successful rounds     |        100 |             100 |
+| Avg write latency     |   266.26ms |        311.34ms |
+| P50 write latency     |   196.53ms |        304.17ms |
+| P95 write latency     |   684.26ms |        686.52ms |
+| Avg read latency      |   251.60ms |        363.05ms |
+| P50 read latency      |   244.15ms |        371.86ms |
+| P95 read latency      |   496.70ms |        570.97ms |
+| Avg convergence time  |   799.20ms |       1090.10ms |
+| P50 convergence time  |   783.24ms |       1147.59ms |
+| P95 convergence time  |  1546.52ms |       1738.67ms |
+| Immediate stale reads |    0 / 300 |         0 / 300 |
+
+**Key findings**:
+
+- Co-located replicas performed better overall for this experiment.
+- Geo-distributed writes were **1.17× slower** on average than co-located writes.
+- Geo-distributed reads were **1.44× slower** on average than co-located reads.
+- Geo-distributed convergence was **1.36× slower** on average than co-located convergence.
+- No immediate stale reads were observed in either setup.
+
+**Interpretation**:
+
+- The geo-distributed setup adds cross-region coordination cost to Raft consensus.
+- Write latency increases because the leader must replicate entries to a majority across longer network paths.
+- Convergence time increases because followers in remote regions take longer to observe and apply the latest committed value.
+- Read latency was also higher in the geo-distributed setup because the experiment client was not placed near the remote followers.
+- The experiment did not fully capture the potential read-locality benefit of geo-distribution. To test that, clients would need to be deployed in each region and read from their nearest replica.
+
+**Conclusion**:
+
+The co-located deployment was better for latency in this experiment. The geo-distributed deployment provided stronger regional fault isolation, but at the cost of higher write latency, higher read latency from the test client, and slower replica convergence. This confirms the expected tradeoff between geographic fault tolerance and consensus performance.
+
+**Helper scripts**:
+
+```bash
+# Co-located deployment
+cd infrastructure/experiments/geo_colocated/terraform
+terraform apply -var='docker_image=shreyansmulkutkar/raft-kv:geo-v2'
+
+# Geo-distributed deployment
+cd infrastructure/experiments/geo_distributed/terraform
+terraform apply \
+  -var='docker_image=shreyansmulkutkar/raft-kv:geo-v2' \
+  -var='region_a=us-east-1' \
+  -var='region_b=us-east-2' \
+  -var='region_c=us-west-2'
+
+# Compare results
+cd infrastructure/experiments
+python3 compare_geo_results.py \
+  --colocated geo_colocated/terraform/colocated_results.csv \
+  --distributed geo_distributed/terraform/geo_distributed_results.csv \
+  --output geo_tradeoff_report.md
+```
 
 ---
 
@@ -339,11 +440,11 @@ docker buildx build --platform linux/amd64 \
   -t pritammane105/raft-kv:latest --push .
 ```
 
-| Variable | Default | Description |
-|---|---|---|
-| `SERVICE_TYPE` | `node` | `node` or `simplekvs` |
-| `RAFT_NODE_ID` | — | Unique node ID |
-| `RAFT_PEERS` | — | `id@host:port,id@host:port` |
-| `RAFT_ADDR` | — | Listen address e.g. `0.0.0.0:8000` |
-| `RAFT_WAL_PATH` | `data/wal.log` | WAL file path |
-| `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path |
+| Variable             | Default              | Description                        |
+| -------------------- | -------------------- | ---------------------------------- |
+| `SERVICE_TYPE`       | `node`               | `node` or `simplekvs`              |
+| `RAFT_NODE_ID`       | —                    | Unique node ID                     |
+| `RAFT_PEERS`         | —                    | `id@host:port,id@host:port`        |
+| `RAFT_ADDR`          | —                    | Listen address e.g. `0.0.0.0:8000` |
+| `RAFT_WAL_PATH`      | `data/wal.log`       | WAL file path                      |
+| `RAFT_SNAPSHOT_PATH` | `data/snapshot.json` | Snapshot file path                 |
